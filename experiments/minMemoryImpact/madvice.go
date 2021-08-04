@@ -4,6 +4,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"syscall"
 	"unsafe"
 )
@@ -19,7 +20,13 @@ func printIncoreInfo(addr uintptr) {
 	if errno != 0 {
 		panic(errno.Error())
 	}
-	fmt.Printf("Map: %v\n", incoreVec)
+
+	nLoaded := 0
+	for _, state := range incoreVec {
+		nLoaded += int(state)
+	}
+
+	fmt.Printf("Loaded: %d/%d\n", nLoaded, len(incoreVec))
 }
 
 func waitInput() {
@@ -30,6 +37,14 @@ func waitInput() {
 func main() {
 	pid := os.Getpid()
 	fmt.Println(pid)
+
+	sigChan := make(chan os.Signal, 2)
+	go func() {
+		for sig := range sigChan {
+			fmt.Printf("SIGNAL: %v", sig)
+		}
+	}()
+	signal.Notify(sigChan)
 
 	memory, err := syscall.Mmap(-1, 0, length, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS)
 	if err != nil {

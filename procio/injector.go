@@ -18,11 +18,13 @@ const pageSize = 4096
 type Registers syscall.PtraceRegs
 
 type Assembler struct {
-	buffer *bytes.Buffer
+	buffer              *bytes.Buffer
+	threadCode          []byte
+	threadAddressOffset int
 }
 
 func NewAssembler() *Assembler {
-	return &Assembler{&bytes.Buffer{}}
+	return &Assembler{buffer: &bytes.Buffer{}}
 }
 
 func (a *Assembler) Madvise(addr uintptr, length uintptr, advice int) *Assembler {
@@ -113,6 +115,23 @@ func (a *Assembler) Int3() *Assembler {
 	a.buffer.Write([]byte{0xCC}) // int 3
 	return a
 }
+
+// CreateThread adds code to start the given threadCode in a separate thread.
+// The given threadCode will be appended to the current Assemblers code upon call to
+// Assemble.
+// This function may only be called once.
+//func (a *Assembler) CreateThread(threadCode []byte, stackSize int64) *Assembler {
+//	a.threadCode = threadCode
+//
+//	stackSize += 8                                    // for start address
+//	stackSize = (stackSize + pageSize - 1) / pageSize // whole multiple of pageSize
+//
+//	a.MmapAnonymous(stackSize, syscall.PROT_READ|syscall.PROT_WRITE)
+//
+//	syscall.Ptr
+//
+//	syscall.SYS_CLONE
+//}
 
 func (a *Assembler) Assemble() []byte {
 	return a.buffer.Bytes()
@@ -340,14 +359,20 @@ func (inj *Injection) WaitForBreakpoint() error {
 		if err != nil {
 			return err
 		}
+		if ws.StopSignal() == syscall.SIGTRAP {
+			fmt.Printf("TRAP\n")
+			break
+		}
 		if ws.Exited() || ws.CoreDump() {
-			return fmt.Errorf("target process exited unexpectedly")
+			err = fmt.Errorf("target process exited unexpectedly")
 		}
 		if ws.StopSignal() == syscall.SIGSEGV {
-			return fmt.Errorf("target process segfaulted")
+			err = fmt.Errorf("target process segfaulted")
 		}
-		if ws.StopSignal() == syscall.SIGTRAP {
-			break
+		fmt.Printf("CAUGHT: %v\n", ws.Signal())
+		err = errors.NewMultiError(err, inj.ContinueSignal(ws.Signal()))
+		if err != nil {
+			return err
 		}
 	}
 	return nil
@@ -355,6 +380,10 @@ func (inj *Injection) WaitForBreakpoint() error {
 
 func (inj *Injection) Continue() error {
 	return syscall.PtraceCont(inj.pid, 0)
+}
+
+func (inj *Injection) ContinueSignal(signal syscall.Signal) error {
+	return syscall.PtraceCont(inj.pid, int(signal))
 }
 
 func (inj *Injection) Close() error {
@@ -400,6 +429,10 @@ func (pc *PageCleaner) Snapshot(seg *MemorySegmentInfo) (*PageStateSnapshot, err
 		inj:   pc.inj,
 		state: stateVec,
 	}, nil
+}
+
+func (pc *PageCleaner) Close() error {
+	return pc.inj.Close()
 }
 
 func (pc *PageCleaner) snapshotAllocateRemoteMemory(length uintptr) (uintptr, error) {
@@ -480,6 +513,7 @@ func (s *PageStateSnapshot) Restore() error {
 	for _, pkg := range workPackages {
 		asm.Madvise(pkg.Address, pkg.Length, syscall.MADV_DONTNEED)
 	}
+	asm.Int3()
 
 	out := s.inj.RunRemoteCode(asm.Assemble(), 1)
 	return s.inj.WaitForRemoteCodeFinish(out)
