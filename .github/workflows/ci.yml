@@ -132,7 +132,7 @@ jobs:
 
             - run: mkdir -p cicd/build/
             - name: Building yapscan for linux
-              run: go build -trimpath -o ../../cicd/build/yapscan
+              run: go build -a -ldflags '-linkmode external -extldflags "-static"' -trimpath -o ../../cicd/build/yapscan
               working-directory: cmd/yapscan
             - name: Upload linux build
               uses: actions/upload-artifact@v2
